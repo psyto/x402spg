@@ -1,0 +1,23 @@
+{
+  "version": 2,
+  "builds": [
+    {
+      "src": "dist/index.js",
+      "use": "@vercel/node"
+    }
+  ],
+  "routes": [
+    {
+      "src": "/(.*)",
+      "dest": "dist/index.js"
+    }
+  ],
+  "env": {
+    "TARGET_API_URL": "@target_api_url",
+    "SPG_WALLET_KEYPAIR": "@spg_wallet_keypair",
+    "FACILITATOR_ADDRESS": "@facilitator_address",
+    "FEE_AMOUNT": "@fee_amount",
+    "SOLANA_CLUSTER": "@solana_cluster"
+  }
+}
+

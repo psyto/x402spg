@@ -1,0 +1,33 @@
+service: x402-serverless-payment-gateway
+
+frameworkVersion: '3'
+
+provider:
+  name: aws
+  runtime: nodejs18.x
+  region: us-east-1
+  environment:
+    TARGET_API_URL: ${env:TARGET_API_URL}
+    SPG_WALLET_KEYPAIR: ${env:SPG_WALLET_KEYPAIR}
+    FACILITATOR_ADDRESS: ${env:FACILITATOR_ADDRESS}
+    FEE_AMOUNT: ${env:FEE_AMOUNT}
+    SOLANA_CLUSTER: ${env:SOLANA_CLUSTER}
+
+functions:
+  gateway:
+    handler: dist/index.handler
+    events:
+      - httpApi:
+          path: /{proxy+}
+          method: ANY
+      - httpApi:
+          path: /
+          method: ANY
+
+plugins:
+  - serverless-offline
+
+custom:
+  serverless-offline:
+    httpPort: 3000
+
