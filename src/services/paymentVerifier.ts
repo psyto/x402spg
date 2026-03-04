@@ -1,5 +1,11 @@
-import { Connection, PublicKey, Keypair } from '@solana/web3.js';
+import { Connection, PublicKey, Keypair, TransactionResponse, VersionedTransactionResponse } from '@solana/web3.js';
 import { config } from '../config';
+
+// SPL Memo Program IDs (v1 and v2)
+const MEMO_PROGRAM_IDS = [
+  'MemoSq4gqABAXKb96qnH8TysNcWxMyWCqXgDLGmfcHr', // Memo v2
+  'Memo1UhkJBfCR6MNB',                               // Memo v1
+];
 
 export interface PaymentDetails {
   amount: number;
@@ -106,26 +112,19 @@ export class PaymentVerifier {
 
           if (receiverIndex === -1) continue;
 
-          // Check balance change (simplified - in production, parse instruction data)
+          // Validate memo: parse transaction instructions to find and match the memo
+          const txMemo = this.extractMemo(tx);
+          if (txMemo !== memo) continue;
+
+          // Verify exact payment amount (with small tolerance for floating point)
           const preBalance = tx.meta.preBalances[receiverIndex] || 0;
           const postBalance = tx.meta.postBalances[receiverIndex] || 0;
           const balanceChange = (postBalance - preBalance) / 1e9; // Convert lamports to SOL
 
-          // Note: This is a simplified check. In production with x402 protocol,
-          // you'd need to parse the transaction instructions to verify:
-          // 1. The exact amount matches
-          // 2. The memo matches
-          // 3. The facilitator was involved
-          // 4. The token type (USDC, SOL, etc.)
+          const AMOUNT_TOLERANCE = 0.000001; // 1 lamport tolerance in SOL
+          if (Math.abs(balanceChange - expectedAmount) > AMOUNT_TOLERANCE) continue;
 
           if (balanceChange > 0) {
-            // In a production implementation, you would:
-            // 1. Parse instructions to find memo instructions
-            // 2. Verify the memo matches the expected memo
-            // 3. Verify the exact payment amount
-            // 4. Verify the facilitator was involved
-            // For now, we'll accept any positive balance change as a valid payment
-            
             return {
               verified: true,
               transactionSignature: sigInfo.signature,
@@ -148,6 +147,54 @@ export class PaymentVerifier {
       verified: false,
       error: 'Payment timeout - no matching transaction found',
     };
+  }
+
+  /**
+   * Extract the memo string from a transaction by looking for Memo program instructions.
+   * Supports both legacy and versioned transactions, and both Memo v1 and v2 program IDs.
+   */
+  private extractMemo(
+    tx: TransactionResponse | VersionedTransactionResponse
+  ): string | null {
+    try {
+      const message = tx.transaction.message;
+      const accountKeys = message.getAccountKeys();
+      const allKeys = accountKeys.staticAccountKeys.map((k: PublicKey) => k.toBase58());
+
+      // Include lookup-table keys if present (versioned transactions)
+      if (accountKeys.accountKeysFromLookups) {
+        const { writable, readonly } = accountKeys.accountKeysFromLookups;
+        allKeys.push(...writable.map((k: PublicKey) => k.toBase58()));
+        allKeys.push(...readonly.map((k: PublicKey) => k.toBase58()));
+      }
+
+      const compiledInstructions = message.compiledInstructions;
+
+      for (const ix of compiledInstructions) {
+        const programId = allKeys[ix.programIdIndex];
+        if (MEMO_PROGRAM_IDS.includes(programId)) {
+          // Memo instruction data is the UTF-8 encoded memo string
+          return Buffer.from(ix.data).toString('utf-8');
+        }
+      }
+
+      // Fallback: check inner instructions (e.g. when memo is in a CPI call)
+      if (tx.meta?.innerInstructions) {
+        for (const inner of tx.meta.innerInstructions) {
+          for (const ix of inner.instructions) {
+            const programId = allKeys[ix.programIdIndex];
+            if (MEMO_PROGRAM_IDS.includes(programId)) {
+              return Buffer.from(ix.data, 'base64').toString('utf-8');
+            }
+          }
+        }
+      }
+
+      return null;
+    } catch (error) {
+      console.error('Error extracting memo from transaction:', error);
+      return null;
+    }
   }
 
   /**

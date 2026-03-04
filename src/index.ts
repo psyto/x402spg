@@ -1,4 +1,4 @@
-import express, { Request, Response } from 'express';
+import express, { Request, Response, NextFunction } from 'express';
 import { config } from './config';
 import { GatewayHandler } from './handlers/gatewayHandler';
 
@@ -8,6 +8,59 @@ const gatewayHandler = new GatewayHandler();
 // Middleware
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+
+// --- In-memory rate limiting: max 10 requests per minute per IP ---
+const RATE_LIMIT_WINDOW_MS = 60 * 1000; // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = 10;
+
+interface RateLimitEntry {
+  timestamps: number[];
+}
+
+const rateLimitStore = new Map<string, RateLimitEntry>();
+
+// Periodically clean up stale entries every 5 minutes to prevent memory leaks
+setInterval(() => {
+  const now = Date.now();
+  for (const [ip, entry] of rateLimitStore.entries()) {
+    entry.timestamps = entry.timestamps.filter(
+      (ts) => now - ts < RATE_LIMIT_WINDOW_MS
+    );
+    if (entry.timestamps.length === 0) {
+      rateLimitStore.delete(ip);
+    }
+  }
+}, 5 * 60 * 1000);
+
+function rateLimitMiddleware(req: Request, res: Response, next: NextFunction): void {
+  const ip = req.ip || req.socket.remoteAddress || 'unknown';
+  const now = Date.now();
+
+  let entry = rateLimitStore.get(ip);
+  if (!entry) {
+    entry = { timestamps: [] };
+    rateLimitStore.set(ip, entry);
+  }
+
+  // Remove timestamps outside the current window
+  entry.timestamps = entry.timestamps.filter(
+    (ts) => now - ts < RATE_LIMIT_WINDOW_MS
+  );
+
+  if (entry.timestamps.length >= RATE_LIMIT_MAX_REQUESTS) {
+    res.status(429).json({
+      error: 'Too Many Requests',
+      message: `Rate limit exceeded. Maximum ${RATE_LIMIT_MAX_REQUESTS} requests per minute.`,
+      retryAfterMs: RATE_LIMIT_WINDOW_MS - (now - entry.timestamps[0]),
+    });
+    return;
+  }
+
+  entry.timestamps.push(now);
+  next();
+}
+
+app.use(rateLimitMiddleware);
 
 // Health check endpoint
 app.get('/health', (_req: Request, res: Response) => {
